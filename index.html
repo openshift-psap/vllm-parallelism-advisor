@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vLLM Model Parallelism Decision Tree</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f8f9fa;--card:#fff;--border:#d0d5dd;
+  --text:#1a1a2e;--text-muted:#667085;
+  --green-hdr:#2e7d32;--green-bg:#e8f5e9;--green-border:#a5d6a7;
+  --blue-bg:#e3f2fd;--blue-border:#90caf9;--blue-hdr:#1565c0;
+  --red-hdr:#c62828;--red-bg:#ffebee;--red-border:#ef9a9a;
+  --tan-bg:#fdf6e3;--tan-border:#dcc89c;
+  --purple:#7b1fa2;--orange:#e65100;--teal:#00695c;
+  --highlight:#1565c0;--highlight-bg:#e3f2fd;
+  --dim:0.3;
+  --node-radius:8px;--shadow:0 1px 3px rgba(0,0,0,.1);
+}
+html{font-size:14px;scroll-behavior:smooth}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+
+/* Page layout */
+.page{max-width:1600px;margin:0 auto;padding:20px}
+header{text-align:center;margin-bottom:24px}
+header h1{font-size:1.8rem;font-weight:700;color:var(--text)}
+header .subtitle{color:var(--text-muted);font-size:1rem;margin-top:4px}
+#reset-btn{margin-top:12px;padding:6px 20px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;font-size:.85rem;color:var(--text)}
+#reset-btn:hover{background:var(--blue-bg)}
+
+.main-layout{display:grid;grid-template-columns:1fr 300px;gap:24px;align-items:start}
+
+/* Flowchart area */
+.flowchart{display:flex;flex-direction:column;gap:0;align-items:center}
+
+/* Sidebar concept diagrams */
+.sidebar{display:flex;flex-direction:column;gap:16px;position:sticky;top:20px}
+
+/* Node types */
+.node{border-radius:var(--node-radius);padding:12px 16px;text-align:center;transition:opacity .3s,box-shadow .3s,border-color .3s;position:relative;max-width:320px}
+.node.dimmed{opacity:var(--dim);pointer-events:none}
+.branch.dimmed{opacity:var(--dim);pointer-events:none}
+.node.highlighted{box-shadow:0 0 0 3px var(--highlight);z-index:2}
+
+.node-start{background:var(--card);border:2px solid var(--border);font-weight:600;font-size:1rem}
+.node-question{background:var(--blue-bg);border:2px solid var(--blue-border);font-size:.9rem}
+.node-outcome{background:var(--green-bg);border:2px solid var(--green-border);font-size:.85rem}
+.node-warning{background:var(--red-bg);border:2px solid var(--red-border);font-size:.85rem}
+.node-info{background:var(--tan-bg);border:2px solid var(--tan-border);font-size:.85rem;text-align:left}
+
+/* Section headers */
+.section-header{width:100%;text-align:center;padding:10px 20px;border-radius:var(--node-radius);font-weight:700;font-size:1.1rem;color:#fff;margin:32px 0 16px}
+.section-header.green{background:var(--green-hdr)}
+.section-header.blue{background:var(--blue-hdr)}
+.section-header.red{background:var(--red-hdr)}
+
+/* Branch containers */
+.branch-row{display:flex;gap:40px;justify-content:center;align-items:flex-start;width:100%}
+.branch{display:flex;flex-direction:column;align-items:center;gap:12px;flex:1;max-width:480px}
+.branch-label{font-weight:700;font-size:1rem;padding:8px 24px;border-radius:var(--node-radius);color:#fff;text-align:center}
+.branch-label.dense{background:var(--green-hdr)}
+.branch-label.moe{background:var(--green-hdr)}
+
+/* Connectors */
+.connector{width:2px;height:24px;background:var(--border);margin:0 auto;transition:background .3s,opacity .3s}
+.connector.highlighted{background:var(--highlight);width:3px}
+.connector.dimmed{opacity:var(--dim)}
+.connector-h{height:2px;background:var(--border);flex:1;min-width:20px}
+
+/* Yes/No choice buttons */
+.choices{display:flex;gap:16px;justify-content:center;margin:4px 0}
+.choice-btn{padding:4px 16px;border-radius:20px;border:2px solid var(--border);background:var(--card);cursor:pointer;font-size:.8rem;font-weight:600;transition:all .2s}
+.choice-btn:hover{border-color:var(--highlight);background:var(--highlight-bg)}
+.choice-btn.selected{background:var(--highlight);color:#fff;border-color:var(--highlight)}
+.choice-btn.yes{color:var(--green-hdr)}
+.choice-btn.yes.selected{background:var(--green-hdr);color:#fff;border-color:var(--green-hdr)}
+.choice-btn.no{color:var(--red-hdr)}
+.choice-btn.no.selected{background:var(--red-hdr);color:#fff;border-color:var(--red-hdr)}
+
+/* Sub-branch for 3-way splits */
+.sub-branches{display:flex;gap:16px;justify-content:center;width:100%}
+.sub-branch{display:flex;flex-direction:column;align-items:center;gap:8px;flex:1}
+.sub-branch-label{font-size:.75rem;font-weight:600;color:var(--text-muted);text-transform:uppercase}
+
+/* Step labels */
+.step-label{font-size:.75rem;font-weight:700;color:var(--blue-hdr);text-transform:uppercase;letter-spacing:.5px;padding:4px 12px;border:1px solid var(--blue-border);border-radius:4px;background:var(--card)}
+
+/* Concept cards */
+.concept-card{background:var(--tan-bg);border:1px solid var(--tan-border);border-radius:var(--node-radius);padding:14px;transition:box-shadow .3s}
+.concept-card.highlight-pulse{box-shadow:0 0 0 3px var(--highlight)}
+.concept-card h3{font-size:.9rem;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.concept-card .abbr{display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;font-size:.75rem;font-weight:700}
+.concept-card .abbr.tp{background:var(--green-hdr)}
+.concept-card .abbr.pp{background:var(--blue-hdr)}
+.concept-card .abbr.dp{background:var(--purple)}
+.concept-card .abbr.ep{background:var(--orange)}
+.concept-card .abbr.dcp{background:var(--teal)}
+.concept-card p{font-size:.8rem;color:var(--text-muted);margin-bottom:8px}
+.concept-diagram{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+.gpu-box{padding:3px 8px;border:1px solid var(--border);border-radius:4px;font-size:.7rem;background:var(--card);text-align:center}
+.gpu-box.active{background:var(--green-bg);border-color:var(--green-border)}
+.diagram-arrow{font-size:.8rem;color:var(--text-muted)}
+.diagram-label{font-size:.7rem;color:var(--text-muted);width:100%;margin-top:2px}
+.diagram-row{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.diagram-row-label{font-size:.7rem;color:var(--text-muted);min-width:48px}
+
+/* Cheat sheet */
+.cheat-sheet{border:1px solid var(--border);border-radius:var(--node-radius);overflow:hidden;background:var(--card)}
+.cheat-sheet h3{padding:10px 14px;background:var(--text);color:#fff;font-size:.85rem}
+.cheat-sheet table{width:100%;border-collapse:collapse;font-size:.8rem}
+.cheat-sheet td{padding:6px 10px;border-top:1px solid var(--border)}
+.cheat-sheet td:first-child{font-weight:700;width:40px;text-align:center;color:#fff}
+.cheat-sheet .cs-tp{background:var(--green-hdr)}
+.cheat-sheet .cs-pp{background:var(--blue-hdr)}
+.cheat-sheet .cs-dp{background:var(--purple)}
+.cheat-sheet .cs-ep{background:var(--orange)}
+.cheat-sheet .cs-dcp{background:var(--teal)}
+
+/* Info bullets */
+.info-list{text-align:left;margin:6px 0 0;padding-left:18px;font-size:.8rem}
+.info-list li{margin-bottom:2px}
+
+/* Horizontal options row */
+.options-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;width:100%;margin:8px 0}
+.option-card{background:var(--card);border:1px solid var(--border);border-radius:var(--node-radius);padding:10px 14px;flex:1;min-width:160px;max-width:220px;text-align:left;font-size:.8rem;transition:opacity .3s}
+.option-card h4{font-size:.85rem;margin-bottom:4px}
+.option-card.dimmed{opacity:var(--dim)}
+
+/* Performance check boxes */
+.perf-row{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;width:100%;margin:8px 0}
+.perf-card{border-radius:var(--node-radius);padding:12px 16px;flex:1;min-width:200px;max-width:280px;font-size:.82rem;text-align:left}
+.perf-card.issue{background:var(--red-bg);border:1px solid var(--red-border)}
+.perf-card.ok{background:var(--green-bg);border:1px solid var(--green-border)}
+.perf-card h4{font-size:.85rem;margin-bottom:6px}
+
+/* Flow group helper */
+.flow-group{display:flex;flex-direction:column;align-items:center;gap:0;width:100%}
+.flow-group>.connector:first-child{margin-top:0}
+
+/* Hidden until revealed */
+.hidden{display:none!important}
+
+/* Tooltip term highlights */
+.term{cursor:help;border-bottom:1px dotted var(--text-muted);font-weight:600}
+.term:hover{color:var(--highlight)}
+
+/* Section wrapper */
+.section-wrap{width:100%;display:flex;flex-direction:column;align-items:center;padding:0 0 16px}
+.section-wrap+.section-wrap{border-top:2px dashed var(--border);padding-top:16px}
+
+/* Equation display */
+.equation{font-family:'SF Mono',Menlo,monospace;background:var(--card);border:1px solid var(--border);padding:4px 12px;border-radius:4px;font-size:.8rem;display:inline-block;margin:4px 0}
+
+/* Responsive */
+@media(max-width:960px){
+  .main-layout{grid-template-columns:1fr}
+  .sidebar{position:static;flex-direction:row;flex-wrap:wrap}
+  .sidebar>*{flex:1;min-width:200px}
+  .branch-row{flex-direction:column;align-items:center}
+  .sub-branches{flex-direction:column;align-items:center}
+  .options-row{flex-direction:column;align-items:center}
+  .perf-row{flex-direction:column;align-items:center}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <h1>vLLM Model Parallelism Decision Tree</h1>
+  <p class="subtitle">How to load a model across multiple GPUs</p>
+  <button id="reset-btn" onclick="resetAll()">Reset selections</button>
+</header>
+
+<div class="main-layout">
+<div class="flowchart">
+
+<!-- ===== SECTION 1: MODEL PLACEMENT ===== -->
+<div class="section-wrap" id="section-placement">
+
+<div class="node node-start" id="start">START</div>
+<div class="connector" id="conn-start"></div>
+
+<div class="node node-question" id="q-type">
+  <strong>1. What type of model?</strong>
+</div>
+<div class="choices">
+  <button class="choice-btn" style="color:var(--green-hdr)" onclick="chooseBranch('dense')">DENSE</button>
+  <button class="choice-btn" style="color:var(--green-hdr)" onclick="chooseBranch('moe')">MoE</button>
+</div>
+
+<div class="connector" id="conn-type"></div>
+
+<div class="branch-row hidden" id="type-branches">
+
+  <!-- ===== DENSE BRANCH ===== -->
+  <div class="branch" id="branch-dense" data-branch="dense">
+    <div class="branch-label dense">DENSE MODEL<br><small style="font-weight:400">(No MoE)</small></div>
+    <div class="connector"></div>
+
+    <div class="node node-question" id="q-dense-fit">
+      Does the model fit on one GPU with enough memory left for KV cache?
+    </div>
+    <div class="choices" id="choices-dense-fit">
+      <button class="choice-btn yes" onclick="choose('dense-fit','yes')">YES</button>
+      <button class="choice-btn no" onclick="choose('dense-fit','no')">NO</button>
+    </div>
+
+    <!-- Dense YES: single GPU -->
+    <div class="flow-group hidden" id="dense-fit-yes">
+      <div class="connector"></div>
+      <div class="node node-outcome">
+        <strong>Use single GPU</strong><br>
+        <span class="equation">TP = 1, PP = 1</span>
+      </div>
+    </div>
+
+    <!-- Dense NO: check node fit -->
+    <div class="flow-group hidden" id="dense-fit-no">
+      <div class="connector"></div>
+      <div class="node node-question" id="q-dense-node">
+        Does the model fit within one GPU node?
+      </div>
+      <div class="choices" id="choices-dense-node">
+        <button class="choice-btn" style="font-size:.75rem" onclick="choose('dense-node','nvlink')">YES<br><small>NVLink/NVSwitch</small></button>
+        <button class="choice-btn" style="font-size:.75rem" onclick="choose('dense-node','pcie')">YES<br><small>PCIe-only</small></button>
+        <button class="choice-btn no" style="font-size:.75rem" onclick="choose('dense-node','multi')">NO<br><small>spans nodes</small></button>
+      </div>
+
+      <div class="sub-branches" id="dense-node-results">
+        <!-- NVLink -->
+        <div class="sub-branch hidden" id="dense-node-nvlink">
+          <div class="connector"></div>
+          <div class="node node-outcome">
+            Use the smallest <span class="term" data-concept="tp">TP</span> size that fits
+            <br><span class="equation">TP &gt; 1, PP = 1</span>
+          </div>
+        </div>
+        <!-- PCIe -->
+        <div class="sub-branch hidden" id="dense-node-pcie">
+          <div class="connector"></div>
+          <div class="node node-info">
+            Compare options:
+            <ul class="info-list">
+              <li><span class="term" data-concept="tp">TP</span></li>
+              <li><span class="term" data-concept="pp">PP</span></li>
+              <li><span class="term" data-concept="tp">TP</span> + <span class="term" data-concept="pp">PP</span></li>
+            </ul>
+          </div>
+        </div>
+        <!-- Multi-node -->
+        <div class="sub-branch hidden" id="dense-node-multi">
+          <div class="connector"></div>
+          <div class="node node-outcome">
+            Prefer:
+            <ul class="info-list">
+              <li><span class="term" data-concept="tp">TP</span> within each node</li>
+              <li><span class="term" data-concept="pp">PP</span> across nodes</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== MoE BRANCH ===== -->
+  <div class="branch" id="branch-moe" data-branch="moe">
+    <div class="branch-label moe">MIXTURE-OF-EXPERTS MODEL<br><small style="font-weight:400">(MoE)</small></div>
+    <div class="connector"></div>
+
+    <!-- Step A -->
+    <div class="node node-question" id="q-moe-attn">
+      Do the shared/attention layers fit on one GPU?
+    </div>
+    <div class="choices" id="choices-moe-attn">
+      <button class="choice-btn yes" onclick="choose('moe-attn','yes')">YES</button>
+      <button class="choice-btn no" onclick="choose('moe-attn','no')">NO</button>
+    </div>
+
+    <div class="flow-group hidden" id="moe-attn-yes">
+      <div class="connector"></div>
+      <div class="node node-info">Start with <span class="term" data-concept="tp">TP</span> = 1</div>
+    </div>
+    <div class="flow-group hidden" id="moe-attn-no">
+      <div class="connector"></div>
+      <div class="node node-info">Use the smallest <span class="term" data-concept="tp">TP</span> size that fits</div>
+    </div>
+
+    <div class="hidden" id="moe-step-a-done">
+      <div class="connector"></div>
+      <div class="step-label">Step A: Size attention &amp; shared layers ✓</div>
+    </div>
+
+    <!-- Step B -->
+    <div class="flow-group hidden" id="moe-step-b">
+      <div class="connector"></div>
+      <div class="step-label">Step B: Place expert weights</div>
+      <div class="connector"></div>
+      <div class="node node-question">
+        Do expert weights fit acceptably without <span class="term" data-concept="ep">EP</span>?
+      </div>
+      <div class="choices" id="choices-moe-ep">
+        <button class="choice-btn yes" onclick="choose('moe-ep','yes')">YES</button>
+        <button class="choice-btn no" onclick="choose('moe-ep','no')">NO</button>
+      </div>
+
+      <div class="flow-group hidden" id="moe-ep-yes">
+        <div class="connector"></div>
+        <div class="node node-info"><span class="term" data-concept="ep">EP</span> may not be necessary</div>
+      </div>
+      <div class="flow-group hidden" id="moe-ep-no">
+        <div class="connector"></div>
+        <div class="node node-outcome">
+          Enable <span class="term" data-concept="ep">EP</span>
+          <br><span class="equation">EP size = TP × DP</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step C -->
+    <div class="flow-group hidden" id="moe-step-c">
+      <div class="connector"></div>
+      <div class="step-label">Step C: Choose DP (MoE attention lanes)</div>
+      <div class="connector"></div>
+      <div class="node node-info" style="max-width:380px">
+        How many attention lanes do you need?
+        <ul class="info-list">
+          <li>More request throughput</li>
+          <li>More concurrency</li>
+          <li>More independent KV caches</li>
+          <li>Wider expert mesh (<span class="equation">EP = TP × DP</span>)</li>
+        </ul>
+        <br>Select <span class="term" data-concept="dp">DP</span> size accordingly
+      </div>
+    </div>
+
+    <!-- Step D -->
+    <div class="flow-group hidden" id="moe-step-d">
+      <div class="connector"></div>
+      <div class="step-label">Step D: Does the complete MoE model fit?</div>
+      <div class="connector"></div>
+      <div class="node node-question">
+        Does the full model fit in memory with <span class="term" data-concept="tp">TP</span>, <span class="term" data-concept="dp">DP</span>, and <span class="term" data-concept="ep">EP</span>?
+      </div>
+      <div class="choices" id="choices-moe-fit">
+        <button class="choice-btn yes" onclick="choose('moe-fit','yes')">YES</button>
+        <button class="choice-btn no" onclick="choose('moe-fit','no')">NO</button>
+      </div>
+
+      <div class="flow-group hidden" id="moe-fit-yes">
+        <div class="connector"></div>
+        <div class="node node-outcome">
+          Use <span class="term" data-concept="tp">TP</span> + <span class="term" data-concept="dp">DP</span> + <span class="term" data-concept="ep">EP</span>
+        </div>
+      </div>
+      <div class="flow-group hidden" id="moe-fit-no">
+        <div class="connector"></div>
+        <div class="node node-outcome">
+          Add <span class="term" data-concept="pp">PP</span> to divide the layer stack
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</div><!-- /section-placement -->
+
+<!-- ===== SECTION 2: KV CACHE VALIDATION ===== -->
+<div class="section-wrap" id="section-kv">
+
+<div class="section-header blue">2. Validate the working set (KV cache)</div>
+<div class="connector"></div>
+
+<div class="node node-question" style="max-width:520px" id="q-kv">
+  Is there enough KV-cache capacity for your target context length and concurrency?
+</div>
+<div class="choices" id="choices-kv">
+  <button class="choice-btn yes" onclick="choose('kv','yes')">YES</button>
+  <button class="choice-btn no" onclick="choose('kv','no')">NO</button>
+</div>
+
+<div class="flow-group hidden" id="kv-yes">
+  <div class="connector"></div>
+  <div class="node node-outcome">Proceed to performance check</div>
+</div>
+
+<div class="flow-group hidden" id="kv-no">
+  <div class="connector"></div>
+  <div style="text-align:center;font-size:.85rem;font-weight:600;color:var(--text-muted);margin:4px 0">
+    Address KV-cache memory pressure (choose one or more):
+  </div>
+  <div class="options-row">
+    <div class="option-card">
+      <h4>Reduce weight memory</h4>
+      <ul class="info-list">
+        <li>Lower-precision weights (FP8/INT4)</li>
+        <li>Adjust <span class="term" data-concept="tp">TP</span>/<span class="term" data-concept="pp">PP</span> layout</li>
+      </ul>
+    </div>
+    <div class="option-card">
+      <h4>Reduce KV-cache memory</h4>
+      <ul class="info-list">
+        <li>Use FP8 KV cache (where supported)</li>
+      </ul>
+    </div>
+    <div class="option-card">
+      <h4>KV cache duplicated?</h4>
+      <p style="font-size:.78rem;margin:4px 0">Is <span class="term" data-concept="tp">TP</span> &gt; effective # of KV heads?</p>
+      <p style="font-size:.78rem">→ Consider <span class="term" data-concept="dcp">DCP</span> (Context Parallelism)</p>
+    </div>
+    <div class="option-card">
+      <h4>Context very large?</h4>
+      <ul class="info-list">
+        <li>Evaluate <span class="term" data-concept="dcp">DCP</span></li>
+        <li>KV-cache offload</li>
+        <li>Lower concurrency / context limits</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</div><!-- /section-kv -->
+
+<!-- ===== SECTION 3: FINAL PERFORMANCE CHECK ===== -->
+<div class="section-wrap" id="section-perf">
+
+<div class="section-header red">3. Final performance check</div>
+<div class="connector"></div>
+<div class="node node-question" style="max-width:480px">
+  Does the selected parallelism topology meet latency goals?
+</div>
+<div class="connector"></div>
+
+<div class="perf-row">
+  <div class="perf-card issue">
+    <h4>TTFT too high <small>(prefill issue)</small></h4>
+    <ul class="info-list">
+      <li>Inspect prefill saturation</li>
+      <li>Long prompts?</li>
+      <li>Tune chunked prefill</li>
+      <li>Check <span class="term" data-concept="pp">PP</span> stage balance</li>
+    </ul>
+  </div>
+  <div class="perf-card issue">
+    <h4>TPOT too high <small>(decode issue)</small></h4>
+    <ul class="info-list">
+      <li>Inspect <span class="term" data-concept="tp">TP</span> communication</li>
+      <li>Inspect <span class="term" data-concept="ep">EP</span> all-to-all communication</li>
+      <li>Inspect expert imbalance</li>
+      <li>Check decode saturation</li>
+    </ul>
+  </div>
+  <div class="perf-card ok">
+    <h4>Latency acceptable</h4>
+    <p style="font-size:.85rem;margin-top:8px">
+      This is your <strong>baseline deployment topology</strong>.
+    </p>
+  </div>
+</div>
+
+</div><!-- /section-perf -->
+
+</div><!-- /flowchart -->
+
+<!-- ===== SIDEBAR: CONCEPT DIAGRAMS ===== -->
+<div class="sidebar">
+
+  <div class="concept-card" id="concept-tp">
+    <h3><span class="abbr tp">TP</span> Tensor Parallelism</h3>
+    <p>Split matrices within attention/shared layers</p>
+    <div class="concept-diagram">
+      <div class="gpu-box active" style="width:100%;margin-bottom:4px">Layer</div>
+    </div>
+    <div class="concept-diagram">
+      <div class="diagram-arrow">↓</div>
+    </div>
+    <div class="concept-diagram" style="margin-top:4px">
+      <div class="gpu-box">GPU0</div>
+      <div class="gpu-box">GPU1</div>
+      <div class="gpu-box">…</div>
+      <div class="gpu-box">GPU(TP-1)</div>
+    </div>
+  </div>
+
+  <div class="concept-card" id="concept-ep">
+    <h3><span class="abbr ep">EP</span> Expert Parallelism</h3>
+    <p>Split experts across TP × DP ranks</p>
+    <div class="concept-diagram">
+      <div class="gpu-box active" style="width:100%;margin-bottom:4px">Router</div>
+    </div>
+    <div class="concept-diagram">
+      <div class="diagram-arrow">↓</div>
+    </div>
+    <div class="concept-diagram" style="margin-top:4px">
+      <div class="gpu-box">GPU0</div>
+      <div class="gpu-box" style="background:var(--green-bg);border-color:var(--green-border)">GPU1</div>
+      <div class="gpu-box">…</div>
+      <div class="gpu-box">GPU(EP-1)</div>
+    </div>
+    <div class="concept-diagram" style="margin-top:2px">
+      <div class="gpu-box" style="font-size:.65rem">Expert 0</div>
+      <div class="gpu-box" style="font-size:.65rem">Expert 1</div>
+      <div class="gpu-box" style="font-size:.65rem">…</div>
+      <div class="gpu-box" style="font-size:.65rem">Expert E-1</div>
+    </div>
+  </div>
+
+  <div class="concept-card" id="concept-dp">
+    <h3><span class="abbr dp">DP</span> Data Parallelism</h3>
+    <p>Creates multiple attention lanes (each with its own scheduler, batch, and KV cache)</p>
+    <div class="concept-diagram">
+      <div class="diagram-row" style="width:100%">
+        <div class="diagram-row-label">Lane 0</div>
+        <div class="gpu-box" style="flex:1;font-size:.7rem">TP group</div>
+      </div>
+    </div>
+    <div class="concept-diagram">
+      <div class="diagram-row" style="width:100%">
+        <div class="diagram-row-label">Lane 1</div>
+        <div class="gpu-box" style="flex:1;font-size:.7rem">TP group</div>
+      </div>
+    </div>
+    <div class="concept-diagram">
+      <div class="diagram-row" style="width:100%">
+        <div class="diagram-row-label">…</div>
+        <div class="gpu-box" style="flex:1;font-size:.7rem">…</div>
+      </div>
+    </div>
+    <div class="concept-diagram">
+      <div class="diagram-row" style="width:100%">
+        <div class="diagram-row-label">Lane DP-1</div>
+        <div class="gpu-box" style="flex:1;font-size:.7rem">TP group</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="concept-card" id="concept-pp">
+    <h3><span class="abbr pp">PP</span> Pipeline Parallelism</h3>
+    <p>Split the layer stack</p>
+    <div class="concept-diagram" style="flex-direction:column;gap:3px">
+      <div class="diagram-row" style="width:100%">
+        <div class="gpu-box" style="min-width:48px">GPU0</div>
+        <div class="gpu-box active" style="flex:1;font-size:.7rem">Layers 1 … L₁</div>
+      </div>
+      <div class="diagram-row" style="width:100%">
+        <div class="gpu-box" style="min-width:48px">GPU1</div>
+        <div class="gpu-box active" style="flex:1;font-size:.7rem">Layers L₁₊₁ … L₂</div>
+      </div>
+      <div class="diagram-row" style="width:100%">
+        <div class="gpu-box" style="min-width:48px">…</div>
+        <div class="gpu-box active" style="flex:1;font-size:.7rem">…</div>
+      </div>
+      <div class="diagram-row" style="width:100%">
+        <div class="gpu-box" style="min-width:48px">GPU(N-1)</div>
+        <div class="gpu-box active" style="flex:1;font-size:.7rem">Layers L<sub>P-1</sub>₊₁ … L</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="concept-card" id="concept-dcp">
+    <h3><span class="abbr dcp">DCP</span> Context Parallelism</h3>
+    <p>Split KV cache along the context dimension within the same TP group</p>
+    <div class="concept-diagram" style="flex-direction:column;gap:3px">
+      <div style="display:flex;gap:4px">
+        <div class="gpu-box">GPU0</div>
+        <div class="gpu-box">GPU1</div>
+        <div class="gpu-box">…</div>
+        <div class="gpu-box">GPU(TP-1)</div>
+      </div>
+      <div class="diagram-arrow" style="text-align:center">↓</div>
+      <div style="display:flex;gap:2px">
+        <div class="gpu-box active" style="flex:1;font-size:.65rem;padding:2px 4px">Chunk 0</div>
+        <div class="gpu-box active" style="flex:1;font-size:.65rem;padding:2px 4px">Chunk 1</div>
+        <div class="gpu-box active" style="flex:1;font-size:.65rem;padding:2px 4px">…</div>
+        <div class="gpu-box active" style="flex:1;font-size:.65rem;padding:2px 4px">Chunk N</div>
+      </div>
+      <div class="diagram-label">Context chunks</div>
+    </div>
+  </div>
+
+  <!-- Cheat Sheet -->
+  <div class="cheat-sheet">
+    <h3>PARALLELISM CHEAT SHEET</h3>
+    <table>
+      <tr><td class="cs-tp">TP</td><td><strong>Tensor Parallelism</strong></td><td>Split matrices within layers</td></tr>
+      <tr><td class="cs-pp">PP</td><td><strong>Pipeline Parallelism</strong></td><td>Split the layer stack</td></tr>
+      <tr><td class="cs-dp">DP</td><td><strong>Data Parallelism</strong></td><td>Multiple attention lanes (MoE)</td></tr>
+      <tr><td class="cs-ep">EP</td><td><strong>Expert Parallelism</strong></td><td>Split experts across TP × DP ranks</td></tr>
+      <tr><td class="cs-dcp">DCP</td><td><strong>Context Parallelism</strong></td><td>Split KV cache along context</td></tr>
+    </table>
+  </div>
+
+</div><!-- /sidebar -->
+</div><!-- /main-layout -->
+
+</div><!-- /page -->
+
+<script>
+const state = {};
+
+function chooseBranch(branch) {
+  state['branch'] = branch;
+  show('type-branches');
+
+  // Highlight the clicked button
+  const btns = document.querySelectorAll('#q-type + .choices .choice-btn');
+  btns.forEach(b => {
+    b.classList.remove('selected');
+    if (b.textContent.trim().toLowerCase() === branch) b.classList.add('selected');
+  });
+
+  if (branch === 'dense') {
+    document.getElementById('branch-dense').classList.remove('dimmed');
+    document.getElementById('branch-moe').classList.add('dimmed');
+  } else {
+    document.getElementById('branch-moe').classList.remove('dimmed');
+    document.getElementById('branch-dense').classList.add('dimmed');
+  }
+}
+
+function choose(questionId, answer) {
+  state[questionId] = answer;
+
+  // Mark chosen button
+  const container = document.getElementById('choices-' + questionId);
+  if (container) {
+    container.querySelectorAll('.choice-btn').forEach(btn => btn.classList.remove('selected'));
+  }
+
+  // Handle each decision
+  switch (questionId) {
+    case 'dense-fit':
+      handleDenseFit(answer);
+      break;
+    case 'dense-node':
+      handleDenseNode(answer);
+      break;
+    case 'moe-attn':
+      handleMoeAttn(answer);
+      break;
+    case 'moe-ep':
+      handleMoeEp(answer);
+      break;
+    case 'moe-fit':
+      handleMoeFit(answer);
+      break;
+    case 'kv':
+      handleKv(answer);
+      break;
+  }
+
+  // Highlight the clicked button
+  if (container) {
+    const buttons = container.querySelectorAll('.choice-btn');
+    buttons.forEach(btn => {
+      const btnText = btn.textContent.trim().toLowerCase();
+      if (questionId === 'dense-node') {
+        if (answer === 'nvlink' && btnText.includes('nvlink')) btn.classList.add('selected');
+        else if (answer === 'pcie' && btnText.includes('pcie')) btn.classList.add('selected');
+        else if (answer === 'multi' && btnText.includes('spans')) btn.classList.add('selected');
+      } else {
+        if (answer === 'yes' && btnText.startsWith('yes')) btn.classList.add('selected');
+        else if (answer === 'no' && btnText.startsWith('no')) btn.classList.add('selected');
+      }
+    });
+  }
+}
+
+function show(id) { document.getElementById(id)?.classList.remove('hidden'); }
+function hide(id) { document.getElementById(id)?.classList.add('hidden'); }
+
+function handleDenseFit(answer) {
+  if (answer === 'yes') {
+    show('dense-fit-yes');
+    hide('dense-fit-no');
+  } else {
+    hide('dense-fit-yes');
+    show('dense-fit-no');
+    // Reset sub-choices
+    hide('dense-node-nvlink');
+    hide('dense-node-pcie');
+    hide('dense-node-multi');
+    delete state['dense-node'];
+    document.querySelectorAll('#choices-dense-node .choice-btn').forEach(b => b.classList.remove('selected'));
+  }
+}
+
+function handleDenseNode(answer) {
+  hide('dense-node-nvlink');
+  hide('dense-node-pcie');
+  hide('dense-node-multi');
+  show('dense-node-' + answer);
+}
+
+function handleMoeAttn(answer) {
+  if (answer === 'yes') {
+    show('moe-attn-yes');
+    hide('moe-attn-no');
+  } else {
+    hide('moe-attn-yes');
+    show('moe-attn-no');
+  }
+  show('moe-step-a-done');
+  show('moe-step-b');
+  // Reset downstream
+  hide('moe-ep-yes');
+  hide('moe-ep-no');
+  hide('moe-step-c');
+  hide('moe-step-d');
+  hide('moe-fit-yes');
+  hide('moe-fit-no');
+  delete state['moe-ep'];
+  delete state['moe-fit'];
+  document.querySelectorAll('#choices-moe-ep .choice-btn, #choices-moe-fit .choice-btn').forEach(b => b.classList.remove('selected'));
+}
+
+function handleMoeEp(answer) {
+  if (answer === 'yes') {
+    show('moe-ep-yes');
+    hide('moe-ep-no');
+  } else {
+    hide('moe-ep-yes');
+    show('moe-ep-no');
+  }
+  show('moe-step-c');
+  show('moe-step-d');
+  // Reset downstream
+  hide('moe-fit-yes');
+  hide('moe-fit-no');
+  delete state['moe-fit'];
+  document.querySelectorAll('#choices-moe-fit .choice-btn').forEach(b => b.classList.remove('selected'));
+}
+
+function handleMoeFit(answer) {
+  if (answer === 'yes') {
+    show('moe-fit-yes');
+    hide('moe-fit-no');
+  } else {
+    hide('moe-fit-yes');
+    show('moe-fit-no');
+  }
+}
+
+function handleKv(answer) {
+  if (answer === 'yes') {
+    show('kv-yes');
+    hide('kv-no');
+  } else {
+    hide('kv-yes');
+    show('kv-no');
+  }
+}
+
+function resetAll() {
+  Object.keys(state).forEach(k => delete state[k]);
+
+  // Hide all conditional content
+  document.querySelectorAll('.flow-group, .sub-branch').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('#moe-step-a-done, #moe-step-b, #moe-step-c, #moe-step-d').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('#kv-yes, #kv-no').forEach(el => el.classList.add('hidden'));
+  document.getElementById('type-branches').classList.add('hidden');
+
+  // Remove dimming
+  document.querySelectorAll('.dimmed').forEach(el => el.classList.remove('dimmed'));
+
+  // Reset buttons
+  document.querySelectorAll('.choice-btn').forEach(btn => btn.classList.remove('selected'));
+}
+
+// Hover on .term elements highlights the corresponding concept card
+document.addEventListener('mouseover', e => {
+  const term = e.target.closest('.term');
+  if (term) {
+    const concept = term.dataset.concept;
+    const card = document.getElementById('concept-' + concept);
+    if (card) card.classList.add('highlight-pulse');
+  }
+});
+document.addEventListener('mouseout', e => {
+  const term = e.target.closest('.term');
+  if (term) {
+    const concept = term.dataset.concept;
+    const card = document.getElementById('concept-' + concept);
+    if (card) card.classList.remove('highlight-pulse');
+  }
+});
+</script>
+</body>
+</html>
